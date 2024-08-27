@@ -1,6 +1,8 @@
 samples/
 train_results/
+backup/
 clipbooru_model/
+slipbooru_model/
 test.jpg
 test.png
 

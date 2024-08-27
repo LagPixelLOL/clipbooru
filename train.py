@@ -6,6 +6,7 @@ import transformers
 import tqdm
 import pillow_avif
 from PIL import Image
+import slip
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TORCH_DTYPE = torch.bfloat16
@@ -35,11 +36,13 @@ model_path, optim_sd, highest_epoch = find_last()
 if model_path is not None:
     print(f"Found previous training at epoch {highest_epoch}, resuming...")
 else:
-    model_path = "clipbooru_model"
+    # model_path = "clipbooru_model"
+    model_path = "slipbooru_model"
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
 config.vision_config.attention_dropout = 0.5
-model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
+# model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
+model = slip.SLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def get_image_tensor(image_path, use_device=True):
