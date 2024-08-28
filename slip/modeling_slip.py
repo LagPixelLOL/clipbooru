@@ -42,12 +42,23 @@ class SLIPPatchEmbeddings(nn.Module):
         current_size = self.image_size
         for i in range(num_layers):
             out_channels = min(self.embed_dim, in_channels * 4)
-            stride = 2 if current_size // 2 >= self.patch_side_len else 1
-            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1))
+
+            # Method A.
+            # stride = 2 if current_size // 2 >= self.patch_side_len else 1
+            # layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1))
+            # layers.append(nn.ReLU())
+            # in_channels = out_channels
+            # if stride == 2:
+            #     current_size //= 2
+
+            # Method B.
+            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1))
             layers.append(nn.ReLU())
+            out_size = current_size // 2
+            if out_size >= self.patch_side_len:
+                layers.append(nn.MaxPool2d(2, 2))
+                current_size = out_size
             in_channels = out_channels
-            if stride == 2:
-                current_size //= 2
 
         # Add a final Conv2d layer to adjust the number of channels into the embedding dimension.
         layers.append(nn.Conv2d(in_channels, self.embed_dim, kernel_size=1, stride=1))

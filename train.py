@@ -40,15 +40,14 @@ else:
     model_path = "slipbooru_model"
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
-config.vision_config.attention_dropout = 0.5
+config.vision_config.attention_dropout = 0.01
 # model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
 model = slip.SLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def get_image_tensor(image_path, use_device=True):
     with Image.open(image_path) as pic:
-        shortest_size = min(pic.width, pic.height)
-        return image_processor(pic.convert("RGB").resize((shortest_size, shortest_size)), return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
+        return image_processor(pic, return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
 
 class DeepDanbooruDataset(Dataset):
 
@@ -101,14 +100,14 @@ def train_test_sets(dataset_dir):
             test_set.append((path, tags_path))
     return DeepDanbooruDataset(train_set), DeepDanbooruDataset(test_set)
 
-batch_size = 128
+batch_size = 224
 train_dataset, eval_dataset = train_test_sets("/root/anime-collection/images")
 print(f"Train size: {len(train_dataset)}\nTest size: {len(eval_dataset)}")
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
-eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
+eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 
-learning_rate = 1e-4
-weight_decay = 1e-4
+learning_rate = 2e-5
+weight_decay = 1e-5
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 if optim_sd is not None:
@@ -152,6 +151,7 @@ def evaluate():
     torch.cuda.empty_cache()
     eval_loss = 0.0
     eval_correct_labels = 0
+    eval_incorrect_labels = 0
     eval_sample_labels = 0
 
     for images, labels in tqdm.tqdm(eval_dataloader):
@@ -161,16 +161,18 @@ def evaluate():
         outputs = model(images, labels)
         probs = torch.sigmoid(outputs[1])
         loss = outputs[0]
-        eval_loss += loss.item()
 
+        eval_loss += loss.item()
         predicted_labels = probs >= 0.5
         eval_correct_labels += int(torch.logical_and(predicted_labels, labels).sum())
+        eval_incorrect_labels += int(torch.logical_xor(predicted_labels, labels).sum())
         eval_sample_labels += int(labels.sum())
 
     eval_loss /= len(eval_dataloader)
     eval_acc = eval_correct_labels / eval_sample_labels
-    tqdm.tqdm.write(f"Eval Loss: {eval_loss:.5g}, Eval Accuracy: {eval_acc:.5g}")
-    return eval_loss, eval_acc
+    eval_inacc = eval_incorrect_labels / eval_sample_labels
+    tqdm.tqdm.write(f"Eval Loss: {eval_loss:.5g}, Eval Accuracy: {eval_acc:.5g}, Eval Inaccuracy: {eval_inacc:.5g}")
+    return eval_loss, eval_acc, eval_inacc
 
 print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 
@@ -183,10 +185,13 @@ def main():
         torch.cuda.empty_cache()
         running_loss = 0.0
         running_correct_labels = 0
+        running_incorrect_labels = 0
         running_sample_labels = 0
         step_count = 0
+        epoch_step_count = 0
         for images, labels in tqdm.tqdm(train_dataloader):
             step_count += 1
+            epoch_step_count += 1
             model.train()
             images = images.squeeze(1).to(device)
             labels = labels.squeeze(1).to(device)
@@ -203,19 +208,32 @@ def main():
             running_loss += loss.item()
             predicted_labels = probs >= 0.5
             running_correct_labels += int(torch.logical_and(predicted_labels, labels).sum())
+            running_incorrect_labels += int(torch.logical_xor(predicted_labels, labels).sum())
             running_sample_labels += int(labels.sum())
 
             if step_count % 50 == 0:
-                step_acc = running_correct_labels / running_sample_labels
                 step_loss = running_loss / step_count
-                tqdm.tqdm.write(f"Loss: {step_loss:.5g}, Accuracy: {step_acc:.5g}, LR: {scheduler.get_last_lr()[0]:.5g}")
+                step_acc = running_correct_labels / running_sample_labels
+                step_inacc = running_incorrect_labels / running_sample_labels
+                running_loss = 0.0
+                running_correct_labels = 0
+                running_incorrect_labels = 0
+                running_sample_labels = 0
+                step_count = 0
+                tqdm.tqdm.write(f"Loss: {step_loss:.5g}, Accuracy: {step_acc:.5g}, Inaccuracy: {step_inacc:.5g}, LR: {scheduler.get_last_lr()[0]:.5g}")
 
-            if step_count % 200 == 0:
+            if epoch_step_count % 200 == 0:
                 evaluate()
 
-        epoch_loss = running_loss / step_count
-        epoch_acc = running_correct_labels / running_sample_labels
-        print(f"Finished epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.5g}, Accuracy: {epoch_acc:.5g}")
+        if step_count and running_sample_labels:
+            epoch_loss = running_loss / step_count
+            epoch_acc = running_correct_labels / running_sample_labels
+            epoch_inacc = running_incorrect_labels / running_sample_labels
+        else:
+            epoch_loss = step_loss
+            epoch_acc = step_acc
+            epoch_inacc = step_inacc
+        print(f"Finished epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss:.5g}, Accuracy: {epoch_acc:.5g}, Inaccuracy: {epoch_inacc:.5g}")
 
         print("Saving model and optimizer states...")
         save_path = os.path.join(train_results_dir, f"epoch_{epoch + 1}")
@@ -227,9 +245,17 @@ def main():
         print("Saved.")
 
         tagged_images = test()
-        eval_loss, eval_acc = evaluate()
+        eval_loss, eval_acc, eval_inacc = evaluate()
         with open(os.path.join(save_path, "train_info.json"), "w", encoding="utf8") as file:
-            json.dump({"train_loss": epoch_loss, "train_accuracy": epoch_acc, "eval_loss": eval_loss, "eval_accuracy": eval_acc, "samples": tagged_images}, file, indent=2, ensure_ascii=False)
+            json.dump({
+                "train_loss": epoch_loss,
+                "train_accuracy": epoch_acc,
+                "train_inaccuracy": epoch_inacc,
+                "eval_loss": eval_loss,
+                "eval_accuracy": eval_acc,
+                "eval_inaccuracy": eval_inacc,
+                "samples": tagged_images,
+            }, file, indent=2, ensure_ascii=False)
 
 if __name__ == "__main__":
     main()
