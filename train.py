@@ -6,7 +6,7 @@ import transformers
 import tqdm
 import pillow_avif
 from PIL import Image
-import slip
+# import slip
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TORCH_DTYPE = torch.bfloat16
@@ -36,13 +36,13 @@ model_path, optim_sd, highest_epoch = find_last()
 if model_path is not None:
     print(f"Found previous training at epoch {highest_epoch}, resuming...")
 else:
-    # model_path = "clipbooru_model"
-    model_path = "slipbooru_model"
+    model_path = "clipbooru_model"
+    # model_path = "slipbooru_model"
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
 config.vision_config.attention_dropout = 0.01
-# model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
-model = slip.SLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
+model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
+# model = slip.SLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def get_image_tensor(image_path, use_device=True):
@@ -100,13 +100,13 @@ def train_test_sets(dataset_dir):
             test_set.append((path, tags_path))
     return DeepDanbooruDataset(train_set), DeepDanbooruDataset(test_set)
 
-batch_size = 224
+batch_size = 128
 train_dataset, eval_dataset = train_test_sets("/root/anime-collection/images")
 print(f"Train size: {len(train_dataset)}\nTest size: {len(eval_dataset)}")
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 
-learning_rate = 2e-5
+learning_rate = 5e-5
 weight_decay = 1e-5
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -115,8 +115,10 @@ if optim_sd is not None:
     optimizer.load_state_dict(optim_sd)
 for group in optimizer.param_groups:
     group["lr"] = learning_rate
+    group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1)
+# scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 581, 1, 1e-5)
 
 del model_path, optim_sd
 
@@ -172,6 +174,7 @@ def evaluate():
     eval_acc = eval_correct_labels / eval_sample_labels
     eval_inacc = eval_incorrect_labels / eval_sample_labels
     tqdm.tqdm.write(f"Eval Loss: {eval_loss:.5g}, Eval Accuracy: {eval_acc:.5g}, Eval Inaccuracy: {eval_inacc:.5g}")
+    torch.cuda.empty_cache()
     return eval_loss, eval_acc, eval_inacc
 
 print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
