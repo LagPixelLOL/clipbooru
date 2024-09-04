@@ -39,7 +39,7 @@ else:
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
 config.vision_config.attention_dropout = 0.01
-model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
+model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="flash_attention_2")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def get_image_tensor(image_path, use_device=True):
@@ -99,7 +99,9 @@ def train_test_sets(dataset_dir):
 
 batch_size = 128
 train_dataset, eval_dataset = train_test_sets("/root/anime-collection/images")
-print(f"Train size: {len(train_dataset)}\nTest size: {len(eval_dataset)}")
+train_dataset_len = len(train_dataset)
+print(f"Train size: {train_dataset_len}\nTest size: {len(eval_dataset)}")
+train_steps_per_epoch = train_dataset_len // batch_size
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 
@@ -114,7 +116,7 @@ for group in optimizer.param_groups:
     group["lr"] = learning_rate
     group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 581, 1, 1e-5)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1289, 1, 1e-5)
 
 del model_path, optim_sd
 
@@ -152,7 +154,7 @@ def evaluate():
     eval_incorrect_labels = 0
     eval_sample_labels = 0
 
-    for images, labels in tqdm.tqdm(eval_dataloader):
+    for images, labels in tqdm.tqdm(eval_dataloader, desc="Eval"):
         images = images.squeeze(1).to(device)
         labels = labels.squeeze(1).to(device)
 
@@ -188,7 +190,7 @@ def main():
         running_sample_labels = 0
         step_count = 0
         epoch_step_count = 0
-        for images, labels in tqdm.tqdm(train_dataloader):
+        for images, labels in tqdm.tqdm(train_dataloader, total=train_steps_per_epoch, desc="Train"):
             step_count += 1
             epoch_step_count += 1
             model.train()
@@ -223,6 +225,9 @@ def main():
 
             if epoch_step_count % 200 == 0:
                 evaluate()
+
+            if epoch_step_count >= train_steps_per_epoch:
+                break
 
         if step_count and running_sample_labels:
             epoch_loss = running_loss / step_count

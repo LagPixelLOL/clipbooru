@@ -2,9 +2,10 @@ samples/
 train_results/
 backup/
 clipbooru_model/
-slipbooru_model/
 test.jpg
+test.jpeg
 test.png
+test.avif
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
