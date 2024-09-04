@@ -6,7 +6,6 @@ import transformers
 import tqdm
 import pillow_avif
 from PIL import Image
-# import slip
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TORCH_DTYPE = torch.bfloat16
@@ -37,12 +36,10 @@ if model_path is not None:
     print(f"Found previous training at epoch {highest_epoch}, resuming...")
 else:
     model_path = "clipbooru_model"
-    # model_path = "slipbooru_model"
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
 config.vision_config.attention_dropout = 0.01
 model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
-# model = slip.SLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="sdpa")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def get_image_tensor(image_path, use_device=True):
@@ -117,7 +114,6 @@ for group in optimizer.param_groups:
     group["lr"] = learning_rate
     group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-# scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 581, 1, 1e-5)
 
 del model_path, optim_sd
