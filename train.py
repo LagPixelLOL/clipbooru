@@ -42,6 +42,14 @@ config.vision_config.attention_dropout = 0.01
 model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="flash_attention_2")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
+def freeze_all_except_classifier(model):
+    for name, parameter in model.named_parameters():
+        if name.startswith("classifier."):
+            continue
+        parameter.requires_grad = False
+
+# freeze_all_except_classifier(model)
+
 def get_image_tensor(image_path, use_device=True):
     with Image.open(image_path) as pic:
         return image_processor(pic, return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
@@ -116,7 +124,7 @@ for group in optimizer.param_groups:
     group["lr"] = learning_rate
     group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1289, 1, 1e-5)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1935, 1, 1e-5)
 
 del model_path, optim_sd
 
