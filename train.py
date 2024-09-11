@@ -54,6 +54,55 @@ def get_image_tensor(image_path, use_device=True):
     with Image.open(image_path) as pic:
         return image_processor(pic, return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
 
+# Copied from anime-collection/utils/utils.py
+def get_image_id_image_metadata_path_tuple_dict(image_dir):
+    if not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"\"{image_dir}\" is not a directory!")
+    image_id_image_metadata_path_tuple_dict = {}
+    for path in os.listdir(image_dir):
+        image_id, ext = os.path.splitext(path)
+        if ext == ".json":
+            continue
+        path = os.path.join(image_dir, path)
+        if not os.path.isfile(path):
+            continue
+        metadata_path = os.path.splitext(path)[0] + ".json"
+        if not os.path.isfile(metadata_path):
+            continue
+        image_id_image_metadata_path_tuple_dict[image_id] = (path, metadata_path)
+    return image_id_image_metadata_path_tuple_dict
+
+# Copied from anime-collection/utils/utils.py
+def get_metadata(metadata_path):
+    if not os.path.isfile(metadata_path):
+        raise FileNotFoundError(f"\"{metadata_path}\" is not a file!")
+    with open(metadata_path, "r", encoding="utf8") as metadata_file:
+        return json.load(metadata_file)
+
+# Copied from anime-collection/utils/utils.py
+def get_tags(metadata_path, exclude=None, include=None):
+    if exclude is not None and include is not None:
+        raise ValueError("You can't set both exclude and include, please only set one.")
+    metadata = get_metadata(metadata_path)
+    type_tags_dict = metadata.get("tags", {})
+    if exclude is not None:
+        for e in exclude:
+            type_tags_dict.pop(e, None)
+        include_rating = "rating" not in exclude
+    elif include is not None:
+        for k in list(type_tags_dict):
+            if k not in include:
+                type_tags_dict.pop(k)
+        include_rating = "rating" in include
+    else:
+        include_rating = True
+    tags = []
+    for l in type_tags_dict.values():
+        tags += l
+    if include_rating:
+        tags.append("rating:" + metadata["rating"])
+    return tags
+
 class DeepDanbooruDataset(Dataset):
 
     def __init__(self, image_tag_path_tuple_list):
@@ -64,45 +113,24 @@ class DeepDanbooruDataset(Dataset):
 
     def __getitem__(self, idx):
         image = get_image_tensor(self.data[idx][0], False)
-
-        with open(self.data[idx][1], "r", encoding="utf8") as file:
-            tags_text = file.read()
-        labels = []
-        for tag in tags_text.split(","):
-            tag = tag.strip()
-            if tag:
-                tag = tag.replace(" ", "_")
-                if tag == "nsfw": tag = "rating:explicit"
-                elif tag == "qfw": tag = "rating:questionable"
-                elif tag == "sfw": tag = "rating:safe"
-                labels.append(tag)
-
+        labels = get_tags(self.data[idx][1])
         label_tensor = torch.zeros(1, model.config.num_labels, dtype=TORCH_DTYPE)
         for label in labels:
             label_idx = model.config.label2id.get(label)
             if label_idx is None:
                 continue
             label_tensor[0, label_idx] = 1
-
         return image, label_tensor
 
 def train_test_sets(dataset_dir):
+    image_id_image_metadata_path_tuple_tuple_list = sorted(get_image_id_image_metadata_path_tuple_dict(dataset_dir).items())
     train_set = []
     test_set = []
-    for path in sorted(os.listdir(dataset_dir)):
-        if path.endswith(".txt"):
-            continue
-        image_id = int(os.path.splitext(path)[0])
-        path = os.path.join(dataset_dir, path)
-        if not os.path.isfile(path):
-            continue
-        tags_path = os.path.splitext(path)[0] + ".txt"
-        if not os.path.isfile(tags_path):
-            continue
-        if image_id % 100 < 99:
-            train_set.append((path, tags_path))
+    for image_id, image_metadata_path_tuple in image_id_image_metadata_path_tuple_tuple_list:
+        if not image_id.endswith("99"):
+            train_set.append(image_metadata_path_tuple)
         else:
-            test_set.append((path, tags_path))
+            test_set.append(image_metadata_path_tuple)
     return DeepDanbooruDataset(train_set), DeepDanbooruDataset(test_set)
 
 batch_size = 128
