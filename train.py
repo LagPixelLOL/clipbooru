@@ -152,7 +152,7 @@ for group in optimizer.param_groups:
     group["lr"] = learning_rate
     group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, 1935, 1, 1e-5)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, train_steps_per_epoch // 4 + 1, 1, 1e-5)
 
 del model_path, optim_sd
 

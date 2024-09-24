@@ -5,6 +5,7 @@ import transformers
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TORCH_DTYPE = torch.bfloat16
 
+# Copied from anime-collection/utils/utils.py
 def get_model_tags(model_tags_path):
     if not os.path.isfile(model_tags_path):
         raise FileNotFoundError(f"\"{model_tags_path}\" is not a file, please place one there!")
