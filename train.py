@@ -40,7 +40,9 @@ else:
 
 config = transformers.CLIPConfig.from_pretrained(model_path)
 config.vision_config.attention_dropout = 0.01
-model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="flash_attention_2")
+# model = transformers.CLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="flash_attention_2")
+from modeling_catclip import CatCLIPForImageClassification
+model = CatCLIPForImageClassification.from_pretrained(model_path, config=config, device_map=device, torch_dtype=TORCH_DTYPE, attn_implementation="flash_attention_2")
 image_processor = transformers.CLIPImageProcessor.from_pretrained(model_path)
 
 def freeze_all_except_classifier(model):
@@ -144,10 +146,10 @@ def calculate_pos_weights(dataset_dir):
     pos_weights = (num_samples - pos_counts) / (pos_counts + 1e-5)
     # pos_weights = torch.clamp(pos_weights, max=50)
     pos_weights += 1
-    pos_weights = torch.log(pos_weights) / torch.log(torch.tensor(5, device=device, dtype=torch.float64))
+    pos_weights = torch.log(pos_weights) / torch.log(torch.tensor(10, device=device, dtype=torch.float64))
     print(f"Weight statistics - Min: {pos_weights.min():.2f}, Max: {pos_weights.max():.2f}, Mean: {pos_weights.mean():.2f}")
-    print(f"Number of rare labels (weight > 20): {(pos_weights > 20).sum()}")
-    print(f"Number of common labels (weight < 5): {(pos_weights < 5).sum()}")
+    print(f"Number of rare labels (weight > 5): {(pos_weights > 5).sum()}")
+    print(f"Number of common labels (weight < 1): {(pos_weights < 1).sum()}")
     return pos_weights.to(TORCH_DTYPE)
 
 def train_test_sets(dataset_dir):
