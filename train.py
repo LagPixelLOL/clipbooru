@@ -54,6 +54,12 @@ def freeze_all_except_classifier(model):
 def get_image_tensor(image_path, use_device=True):
     with Image.open(image_path) as pic:
         return image_processor(pic, return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
+        # ztmp test
+        x = torch.fft.fft2(image_processor(pic, return_tensors="pt")["pixel_values"]).abs()
+        x += 1
+        x = x.log10()
+        x = x / x.max()
+        return x.to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
 
 # Copied from LagPixelLOL/aisp/utils/utils.py
 def get_image_id_image_metadata_path_tuple_dict(image_dir):
@@ -106,14 +112,14 @@ def get_tags(metadata_path_or_dict, exclude=None, include=None, no_rating_prefix
 
 class DeepDanbooruDataset(Dataset):
 
-    def __init__(self, image_tag_path_tuple_list):
+    def __init__(self, image_tag_path_tuple_list, labels_only=False):
         self.data = image_tag_path_tuple_list
+        self.labels_only = labels_only
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        image = get_image_tensor(self.data[idx][0], False)
         labels = get_tags(self.data[idx][1])
         label_tensor = torch.zeros(1, model.config.num_labels, dtype=TORCH_DTYPE)
         for label in labels:
@@ -121,7 +127,28 @@ class DeepDanbooruDataset(Dataset):
             if label_idx is None:
                 continue
             label_tensor[0, label_idx] = 1
+        if self.labels_only:
+            return label_tensor
+        image = get_image_tensor(self.data[idx][0], False)
         return image, label_tensor
+
+def calculate_pos_weights(dataset_dir):
+    print("Calculating per-class weights...")
+    weight_compute_data = list(get_image_id_image_metadata_path_tuple_dict(dataset_dir).values())
+    labels_dataset = DeepDanbooruDataset(weight_compute_data, labels_only=True)
+    pos_counts = torch.zeros(model.config.num_labels, device=device, dtype=torch.float64)
+    num_samples = len(labels_dataset)
+    dataloader = DataLoader(labels_dataset, batch_size=4096, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
+    for labels in tqdm.tqdm(dataloader, desc="Counting labels"):
+        pos_counts += labels.squeeze(1).to(device).sum(0)
+    pos_weights = (num_samples - pos_counts) / (pos_counts + 1e-5)
+    # pos_weights = torch.clamp(pos_weights, max=50)
+    pos_weights += 1
+    pos_weights = torch.log(pos_weights) / torch.log(torch.tensor(5, device=device, dtype=torch.float64))
+    print(f"Weight statistics - Min: {pos_weights.min():.2f}, Max: {pos_weights.max():.2f}, Mean: {pos_weights.mean():.2f}")
+    print(f"Number of rare labels (weight > 20): {(pos_weights > 20).sum()}")
+    print(f"Number of common labels (weight < 5): {(pos_weights < 5).sum()}")
+    return pos_weights.to(TORCH_DTYPE)
 
 def train_test_sets(dataset_dir):
     image_id_image_metadata_path_tuple_tuple_list = sorted(get_image_id_image_metadata_path_tuple_dict(dataset_dir).items())
@@ -135,15 +162,18 @@ def train_test_sets(dataset_dir):
     return DeepDanbooruDataset(train_set), DeepDanbooruDataset(test_set)
 
 batch_size = 128
-train_dataset, eval_dataset = train_test_sets("/root/anime-collection/images")
+dataset_dir = "/root/anime-collection/images"
+train_dataset, eval_dataset = train_test_sets(dataset_dir)
 train_dataset_len = len(train_dataset)
 print(f"Train size: {train_dataset_len}\nTest size: {len(eval_dataset)}")
 train_steps_per_epoch = train_dataset_len // batch_size
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, num_workers=os.cpu_count(), generator=torch.Generator().manual_seed(42))
 
-learning_rate = 5e-5
-weight_decay = 1e-5
+pos_weights = calculate_pos_weights(dataset_dir)
+
+learning_rate = 1e-4
+weight_decay = 1e-6
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 if optim_sd is not None:
@@ -153,7 +183,8 @@ for group in optimizer.param_groups:
     group["lr"] = learning_rate
     group["initial_lr"] = learning_rate
     group["weight_decay"] = weight_decay
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, train_steps_per_epoch // 4 + 1, 1, 1e-5)
+# scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, train_steps_per_epoch // 4 + 1, 1, 1e-5)
+scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, 1)
 
 del model_path, optim_sd
 
@@ -195,9 +226,9 @@ def evaluate():
         images = images.squeeze(1).to(device)
         labels = labels.squeeze(1).to(device)
 
-        outputs = model(images, labels)
-        probs = torch.sigmoid(outputs[1])
-        loss = outputs[0]
+        outputs = model(images)
+        probs = torch.sigmoid(outputs[0])
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs[0], labels, pos_weight=pos_weights)
 
         eval_loss += loss.item()
         predicted_labels = probs >= 0.5
@@ -217,7 +248,7 @@ print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 num_epochs = 69420
 
 def main():
-    test()
+    # test()
     evaluate()
     for epoch in range(highest_epoch, num_epochs):
         torch.cuda.empty_cache()
@@ -235,11 +266,12 @@ def main():
             labels = labels.squeeze(1).to(device)
 
             optimizer.zero_grad()
-            outputs = model(images, labels)
-            probs = torch.sigmoid(outputs[1])
-            loss = outputs[0]
+            outputs = model(images)
+            probs = torch.sigmoid(outputs[0])
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs[0], labels, pos_weight=pos_weights)
 
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
             optimizer.step()
             scheduler.step()
 
@@ -258,7 +290,7 @@ def main():
                 running_incorrect_labels = 0
                 running_sample_labels = 0
                 step_count = 0
-                tqdm.tqdm.write(f"Loss: {step_loss:.5g}, Accuracy: {step_acc:.5g}, Inaccuracy: {step_inacc:.5g}, LR: {scheduler.get_last_lr()[0]:.5g}")
+                tqdm.tqdm.write(f"Loss: {step_loss:.5g}, Accuracy: {step_acc:.5g}, Inaccuracy: {step_inacc:.5g}, LR: {scheduler.get_last_lr()[0]:.5g}, Grad Norm: {grad_norm:.5g}")
 
             if epoch_step_count % 200 == 0:
                 evaluate()
