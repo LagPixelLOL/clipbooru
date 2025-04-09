@@ -1,11 +1,12 @@
 import os
 import json
-import torch
-from torch.utils.data import Dataset, DataLoader
-import transformers
+import copy
 import tqdm
+import torch
 import pillow_avif
+import transformers
 from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TORCH_DTYPE = torch.bfloat16
@@ -54,7 +55,7 @@ def get_image_tensor(image_path, use_device=True):
     with Image.open(image_path) as pic:
         return image_processor(pic, return_tensors="pt")["pixel_values"].to(device=device if use_device else "cpu", dtype=TORCH_DTYPE)
 
-# Copied from anime-collection/utils/utils.py
+# Copied from LagPixelLOL/aisp/utils/utils.py
 def get_image_id_image_metadata_path_tuple_dict(image_dir):
     if not os.path.isdir(image_dir):
         raise FileNotFoundError(f"\"{image_dir}\" is not a directory!")
@@ -72,19 +73,19 @@ def get_image_id_image_metadata_path_tuple_dict(image_dir):
         image_id_image_metadata_path_tuple_dict[image_id] = (path, metadata_path)
     return image_id_image_metadata_path_tuple_dict
 
-# Copied from anime-collection/utils/utils.py
+# Copied from LagPixelLOL/aisp/utils/utils.py
 def get_metadata(metadata_path):
     if not os.path.isfile(metadata_path):
         raise FileNotFoundError(f"\"{metadata_path}\" is not a file!")
     with open(metadata_path, "r", encoding="utf8") as metadata_file:
         return json.load(metadata_file)
 
-# Copied from anime-collection/utils/utils.py
-def get_tags(metadata_path, exclude=None, include=None):
+# Copied from LagPixelLOL/aisp/utils/utils.py
+def get_tags(metadata_path_or_dict, exclude=None, include=None, no_rating_prefix=False):
     if exclude is not None and include is not None:
         raise ValueError("You can't set both exclude and include, please only set one.")
-    metadata = get_metadata(metadata_path)
-    type_tags_dict = metadata.get("tags", {})
+    metadata = get_metadata(metadata_path_or_dict) if not isinstance(metadata_path_or_dict, dict) else metadata_path_or_dict
+    type_tags_dict = copy.copy(metadata.get("tags", {}))
     if exclude is not None:
         for e in exclude:
             type_tags_dict.pop(e, None)
@@ -100,7 +101,7 @@ def get_tags(metadata_path, exclude=None, include=None):
     for l in type_tags_dict.values():
         tags += l
     if include_rating:
-        tags.append("rating:" + metadata["rating"])
+        tags.append(("" if no_rating_prefix else "rating:") + metadata["rating"])
     return tags
 
 class DeepDanbooruDataset(Dataset):
